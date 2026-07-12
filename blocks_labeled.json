@@ -1,0 +1,922 @@
+[
+  {
+    "text": "Concurrency is the computer science term for breaking up a single process into inde\u2010pendent components and specifying how these components safely share data. Mostlanguages provide concurrency via a library using operating system\u2013level threadsthat share data by attempting to acquire locks. Go is different. Its main concurrencymodel, arguably Go\u2019s most famous feature, is based on Communicating SequentialProcesses (CSP). This style for concurrency was described in 1978 in a paper by TonyHoare, the man who invented the Quicksort algorithm. The patterns implementedwith CSP are just as powerful as the standard ones but are far easier to understand.",
+    "section": "CHAPTER 12Concurrency in Go"
+  },
+  {
+    "text": "In this chapter, you are going to quickly review the features that are the backboneof concurrency in Go: goroutines, channels, and the select keyword. Then youare going to look at some common Go concurrency patterns and learn about thesituations where lower-level techniques are a better approach.",
+    "section": "CHAPTER 12Concurrency in Go"
+  },
+  {
+    "text": "Let\u2019s start with a word of caution. Be sure that your program benefits from concur\u2010rency. When new Go developers start experimenting with concurrency, they tend togo through a series of stages:",
+    "section": "When to Use Concurrency"
+  },
+  {
+    "text": "1. This is amazing; I\u2019m going to put everything in goroutines!1.\n2. My program isn\u2019t any faster. I\u2019m adding buffers to my channels.2.\n3. My channels are blocking and I\u2019m getting deadlocks. I\u2019m going to use buffered3.channels with really big buffers.\n4. My channels are still blocking. I\u2019m going to use mutexes.4.\n5. Forget it, I\u2019m giving up on concurrency.5.",
+    "section": "When to Use Concurrency"
+  },
+  {
+    "text": "People are attracted to concurrency because they believe concurrent programs runfaster. Unfortunately, that\u2019s not always the case. More concurrency doesn\u2019t automati\u2010cally make things faster, and it can make code harder to understand. The key isunderstanding that concurrency is not parallelism. Concurrency is a tool to betterstructure the problem you are trying to solve.",
+    "section": "When to Use Concurrency"
+  },
+  {
+    "text": "Whether concurrent code runs in parallel (at the same time) depends on the hard\u2010ware and whether the algorithm allows it. In 1967, Gene Amdahl, one of the pioneersof computer science, derived Amdahl\u2019s law. It is a formula for figuring out how muchparallel processing can improve performance, given how much of the work must beperformed sequentially. If you want to dive into the details on Amdahl\u2019s law, you canlearn more in The Art of Concurrency by Clay Breshears (O\u2019Reilly). For our purposes,all you need to understand is that more concurrency does not mean more speed.",
+    "section": "When to Use Concurrency"
+  },
+  {
+    "text": "Broadly speaking, all programs follow the same three-step process: they take data,transform it, and then output the result. Whether you should use concurrency inyour program depends on how data flows through the steps in your program. Some\u2010times two steps can be concurrent because the data from one is not required for theother to proceed, and at other times two steps must happen in series because onedepends on the other\u2019s output. Use concurrency when you want to combine datafrom multiple operations that can operate independently.",
+    "section": "When to Use Concurrency"
+  },
+  {
+    "text": "Another important thing to note is that concurrency isn\u2019t worth using if the processthat\u2019s running concurrently doesn\u2019t take a lot of time. Concurrency isn\u2019t free; manycommon in-memory algorithms are so fast that the overhead of passing values viaconcurrency overwhelms any potential time savings you\u2019d gain by running concur\u2010rent code in parallel. This is why concurrent operations are often used for I/O; read\u2010ing or writing to a disk or network is thousands of times slower than all but the mostcomplicated in-memory processes. If you are not sure if concurrency will help, firstwrite your code serially and then write a benchmark to compare performance witha concurrent implementation. (See \u201cUsing Benchmarks\u201d on page 393 for informationon how to benchmark your code.)",
+    "section": "When to Use Concurrency"
+  },
+  {
+    "text": "Let\u2019s consider an example. Say you are writing a web service that calls three otherweb services. Your program sends data to two of those services, and then takes theresults of those two calls and sends them to the third, returning the result. The entireprocess must take less than 50 milliseconds, or an error should be returned. This is agood use of concurrency, because there are parts of the code that need to perform I/Othat can run without interacting with one another, there\u2019s a part where the results arecombined, and there\u2019s a limit on how long the code needs to run. At the end of thischapter, you\u2019ll see how to implement this code.",
+    "section": "When to Use Concurrency"
+  },
+  {
+    "text": "The goroutine is the core concept in Go\u2019s concurrency model. To understand gorou\u2010tines, let\u2019s define a couple of terms. The first is process. A process is an instance ofa program that\u2019s being run by a computer\u2019s operating system. The operating systemassociates some resources, such as memory, with the process and makes sure thatother processes can\u2019t access them. A process is composed of one or more threads. Athread is a unit of execution that is given some time to run by the operating system.Threads within a process share access to resources. A CPU can execute instructionsfrom one or more threads at the same time, depending on the number of cores. Oneof the jobs of an operating system is to schedule threads on the CPU to make surethat every process (and every thread within a process) gets a chance to run.",
+    "section": "Goroutines"
+  },
+  {
+    "text": "Think of a goroutine as a lightweight thread, managed by the Go runtime. Whena Go program starts, the Go runtime creates a number of threads and launches asingle goroutine to run your program. All the goroutines created by your program,including the initial one, are assigned to these threads automatically by the Go run\u2010time scheduler, just as the operating system schedules threads across CPU cores. Thismight seem like extra work, since the underlying operating system already includes ascheduler that manages threads and processes, but it has several benefits:",
+    "section": "Goroutines"
+  },
+  {
+    "text": "\u2022 Goroutine creation is faster than thread creation, because you aren\u2019t creating an\u2022operating system\u2013level resource.\n\u2022 Goroutine initial stack sizes are smaller than thread stack sizes and can grow as\u2022needed. This makes goroutines more memory efficient.\n\u2022 Switching between goroutines is faster than switching between threads because\u2022it happens entirely within the process, avoiding operating system calls that are(relatively) slow.\n\u2022 The goroutine scheduler is able to optimize its decisions because it is part of\u2022the Go process. The scheduler works with the network poller, detecting whena goroutine can be unscheduled because it is blocking on I/O. It also integrateswith the garbage collector, making sure that work is properly balanced across allthe operating system threads assigned to your Go process.",
+    "section": "Goroutines"
+  },
+  {
+    "text": "These advantages allow Go programs to spawn hundreds, thousands, even tens ofthousands of simultaneous goroutines. If you try to launch thousands of threads in alanguage with native threading, your program will slow to a crawl.",
+    "section": "Goroutines"
+  },
+  {
+    "text": "If you are interested in learning more about how the schedulerdoes its work, watch the talk Kavya Joshi gave at GopherCon 2018called \u201cThe Scheduler Saga\u201d.",
+    "section": "Goroutines"
+  },
+  {
+    "text": "A goroutine is launched by placing the go keyword before a function invocation. Justas with any other function, you can pass it parameters to initialize its state. However,any values returned by the function are ignored.",
+    "section": "Goroutines"
+  },
+  {
+    "text": "Any function can be launched as a goroutine. This is different from JavaScript, wherea function runs asynchronously only if the author of the function declared it with theasync keyword. However, it is customary in Go to launch goroutines with a closurethat wraps business logic. The closure takes care of the concurrent bookkeeping. Thefollowing sample code demonstrates the concept:",
+    "section": "Goroutines"
+  },
+  {
+    "text": "func process(val int) int {    // do something with val}",
+    "section": "Goroutines"
+  },
+  {
+    "text": "func processConcurrently(inVals []int) []int {    // create the channels    in := make(chan int, 5)    out := make(chan int, 5)    // launch processing goroutines    for i := 0; i < 5; i++ {        go func() {            for val := range in {                out <- process(val)            }        }()    }    // load the data into the in channel in another goroutine    // read the data from the out channel    // return the data}",
+    "section": "Goroutines"
+  },
+  {
+    "text": "In this code, the processConcurrently function creates a closure, which reads valuesout of a channel and passes them to the business logic in the process function. Theprocess function is completely unaware that it is running in a goroutine. The resultof process is then written back to a different channel by the closure. (I\u2019ll do a briefoverview of channels in the next section.) This separation of responsibility makesyour programs modular and testable, and keeps concurrency out of your APIs. Thedecision to use a thread-like model for concurrency means that Go programs avoidthe \u201cfunction coloring\u201d problem described by Bob Nystrom in his famous blog post\u201cWhat Color Is Your Function?\u201d",
+    "section": "Goroutines"
+  },
+  {
+    "text": "You can find a complete example on The Go Playground or in the sam\u2010ple_code/goroutine directory in the Chapter 12 repository.",
+    "section": "Goroutines"
+  },
+  {
+    "text": "Goroutines communicate using channels. Like slices and maps, channels are a built-intype created using the make function:",
+    "section": "Channels"
+  },
+  {
+    "text": "ch := make(chan int)",
+    "section": "Channels"
+  },
+  {
+    "text": "Like maps, channels are reference types. When you pass a channel to a function, youare really passing a pointer to the channel. Also like maps and slices, the zero valuefor a channel is nil.",
+    "section": "Channels"
+  },
+  {
+    "text": "Use the <- operator to interact with a channel. You read from a channel by placingthe <- operator to the left of the channel variable, and you write to a channel byplacing it to the right:",
+    "section": "Reading, Writing, and Buffering"
+  },
+  {
+    "text": "a := <-ch // reads a value from ch and assigns it to ach <- b   // write the value in b to ch",
+    "section": "Reading, Writing, and Buffering"
+  },
+  {
+    "text": "Each value written to a channel can be read only once. If multiple goroutines arereading from the same channel, a value written to the channel will be read by onlyone of them.",
+    "section": "Reading, Writing, and Buffering"
+  },
+  {
+    "text": "A single goroutine rarely reads and writes to the same channel. When assigning achannel to a variable or field, or passing it to a function, use an arrow before the chankeyword (ch <-chan int) to indicate that the goroutine only reads from the channel.Use an arrow after the chan keyword (ch chan<- int) to indicate that the goroutineonly writes to the channel. Doing so allows the Go compiler to ensure that a channelis only read from or written to by a function.",
+    "section": "Reading, Writing, and Buffering"
+  },
+  {
+    "text": "By default, channels are unbuffered. Every write to an open, unbuffered channelcauses the writing goroutine to pause until another goroutine reads from the samechannel. Likewise, a read from an open, unbuffered channel causes the readinggoroutine to pause until another goroutine writes to the same channel. This meansyou cannot write to or read from an unbuffered channel without at least two concur\u2010rently running goroutines.",
+    "section": "Reading, Writing, and Buffering"
+  },
+  {
+    "text": "Go also has buffered channels. These channels buffer a limited number of writeswithout blocking. If the buffer fills before there are any reads from the channel, asubsequent write to the channel pauses the writing goroutine until the channel isread. Just as writing to a channel with a full buffer blocks, reading from a channelwith an empty buffer also blocks.",
+    "section": "Reading, Writing, and Buffering"
+  },
+  {
+    "text": "A buffered channel is created by specifying the capacity of the buffer when creatingthe channel:",
+    "section": "Reading, Writing, and Buffering"
+  },
+  {
+    "text": "ch := make(chan int, 10)",
+    "section": "Reading, Writing, and Buffering"
+  },
+  {
+    "text": "The built-in functions len and cap return information about a buffered channel. Uselen to find out how many values are currently in the buffer and use cap to find outthe maximum buffer size. The capacity of the buffer cannot be changed.",
+    "section": "Reading, Writing, and Buffering"
+  },
+  {
+    "text": "Passing an unbuffered channel to both len and cap returns 0. Thismakes sense because, by definition, an unbuffered channel doesn\u2019thave a buffer to store values.",
+    "section": "Reading, Writing, and Buffering"
+  },
+  {
+    "text": "Most of the time, you should use unbuffered channels. In \u201cKnow When to UseBuffered and Unbuffered Channels\u201d on page 301, I\u2019ll talk about the situations wherebuffered channels are useful.",
+    "section": "Reading, Writing, and Buffering"
+  },
+  {
+    "text": "You can also read from a channel by using a for-range loop:",
+    "section": "Using for-range and Channels"
+  },
+  {
+    "text": "for v := range ch {    fmt.Println(v)}",
+    "section": "Using for-range and Channels"
+  },
+  {
+    "text": "Unlike other for-range loops, there is only a single variable declared for the channel,which is the value. If the channel is open and a value is available on the channel,it is assigned to v and the body of the loop executes. If no value is available on thechannel, the goroutine pauses until a value is available or the channel is closed. Theloop continues until the channel is closed, or until a break or return statement isreached.",
+    "section": "Using for-range and Channels"
+  },
+  {
+    "text": "When you\u2019re done writing to a channel, you close it using the built-in close function:",
+    "section": "Closing a Channel"
+  },
+  {
+    "text": "close(ch)",
+    "section": "Closing a Channel"
+  },
+  {
+    "text": "Once a channel is closed, any attempts to write to it or close it again will panic. Inter\u2010estingly, attempting to read from a closed channel always succeeds. If the channel isbuffered and some values haven\u2019t been read yet, they will be returned in order. If thechannel is unbuffered or the buffered channel has no more values, the zero value forthe channel\u2019s type is returned.",
+    "section": "Closing a Channel"
+  },
+  {
+    "text": "This leads to a question that might sound familiar from your experience with maps:when your code reads from a channel, how do you tell the difference between a zerovalue that was written and a zero value that was returned because the channel isclosed? Since Go tries to be a consistent language, there is a familiar answer\u2014use thecomma ok idiom to detect whether a channel has been closed:",
+    "section": "Closing a Channel"
+  },
+  {
+    "text": "v, ok := <-ch",
+    "section": "Closing a Channel"
+  },
+  {
+    "text": "If ok is set to true, the channel is open. If it is set to false, the channel is closed.",
+    "section": "Closing a Channel"
+  },
+  {
+    "text": "Anytime you are reading from a channel that might be closed, usethe comma ok idiom to ensure that the channel is still open.",
+    "section": "Closing a Channel"
+  },
+  {
+    "text": "The responsibility for closing a channel lies with the goroutine that writes to thechannel. Be aware that closing a channel is required only if a goroutine is waiting forthe channel to close (such as one using a for-range loop to read from the channel).Since a channel is just another variable, Go\u2019s runtime can detect channels that are nolonger referenced and garbage collect them.",
+    "section": "Closing a Channel"
+  },
+  {
+    "text": "Channels are one of the two things that set apart Go\u2019s concurrency model. They guideyou into thinking about your code as a series of stages and making data dependen\u2010cies clear, which makes it easier to reason about concurrency. Other languages relyon global shared state to communicate between threads. This mutable shared statemakes it hard to understand how data flows through a program, which in turn makesit difficult to understand whether two threads are actually independent.",
+    "section": "Closing a Channel"
+  },
+  {
+    "text": "Channels have many states, each with a different behavior when reading, writing, orclosing. Use Table 12-1 to keep them straight.",
+    "section": "Understanding How Channels Behave"
+  },
+  {
+    "text": "Table 12-1. How channels behave",
+    "section": "Understanding How Channels Behave"
+  },
+  {
+    "text": "Unbuffered, openUnbuffered, closedBuffered, openBuffered, closedNilReadPause untilsomething is written",
+    "section": "Understanding How Channels Behave"
+  },
+  {
+    "text": "Return zero value (usecomma ok to see ifclosed)",
+    "section": "Understanding How Channels Behave"
+  },
+  {
+    "text": "Pause if buffer isempty",
+    "section": "Understanding How Channels Behave"
+  },
+  {
+    "text": "Return a remaining value inthe buffer; if the buffer isempty, return zero value (usecomma ok to see if closed)",
+    "section": "Understanding How Channels Behave"
+  },
+  {
+    "text": "Hangforever",
+    "section": "Understanding How Channels Behave"
+  },
+  {
+    "text": "WritePause untilsomething is read",
+    "section": "Understanding How Channels Behave"
+  },
+  {
+    "text": "PANICPause if buffer is fullPANICHangforeverCloseWorksPANICWorks, remainingvalues still there",
+    "section": "Understanding How Channels Behave"
+  },
+  {
+    "text": "PANICPANIC",
+    "section": "Understanding How Channels Behave"
+  },
+  {
+    "text": "You must avoid situations that cause Go programs to panic. As mentioned earlier, thestandard pattern is to make the writing goroutine responsible for closing the channelwhen there\u2019s nothing left to write. When multiple goroutines are writing to the samechannel, this becomes more complicated, as calling close twice on the same channelcauses a panic. Furthermore, if you close a channel in one goroutine, a write to thechannel in another goroutine triggers a panic as well. The way to address this is to usea sync.WaitGroup. You\u2019ll see an example in \u201cUse WaitGroups\u201d on page 306.",
+    "section": "Understanding How Channels Behave"
+  },
+  {
+    "text": "A nil channel can be dangerous as well, but it is useful in some cases. You\u2019ll learnmore about them in \u201cTurn Off a case in a select\u201d on page 304.",
+    "section": "Understanding How Channels Behave"
+  },
+  {
+    "text": "The select statement is the other thing that sets apart Go\u2019s concurrency model. Itis the control structure for concurrency in Go, and it elegantly solves a commonproblem: if you can perform two concurrent operations, which one do you do first?You can\u2019t favor one operation over others, or you\u2019ll never process some cases. This iscalled starvation.",
+    "section": "select"
+  },
+  {
+    "text": "The select keyword allows a goroutine to read from or write to one of a set ofmultiple channels. It looks a great deal like a blank switch statement:",
+    "section": "select"
+  },
+  {
+    "text": "select {case v := <-ch:    fmt.Println(v)case v := <-ch2:    fmt.Println(v)case ch3 <- x:    fmt.Println(\"wrote\", x)case <-ch4:    fmt.Println(\"got value on ch4, but ignored it\")}",
+    "section": "select"
+  },
+  {
+    "text": "Each case in a select is a read or a write to a channel. If a read or write is possiblefor a case, it is executed along with the body of the case. Like a switch, each case ina select creates its own block.",
+    "section": "select"
+  },
+  {
+    "text": "What happens if multiple cases have channels that can be read or written? Theselect algorithm is simple: it picks randomly from any of its cases that can goforward; order is unimportant. This is very different from a switch statement, whichalways chooses the first case that resolves to true. It also cleanly resolves the starva\u2010tion problem, as no case is favored over another and all are checked at the same time.",
+    "section": "select"
+  },
+  {
+    "text": "Another advantage of select choosing at random is that it prevents one of the mostcommon causes of deadlocks: acquiring locks in an inconsistent order. If you havetwo goroutines that both access the same two channels, they must be accessed in thesame order in both goroutines, or they will deadlock. This means that neither one",
+    "section": "select"
+  },
+  {
+    "text": "can proceed because they are waiting on each other. If every goroutine in your Goapplication is deadlocked, the Go runtime kills your program (see Example 12-1).",
+    "section": "select"
+  },
+  {
+    "text": "Example 12-1. Deadlocking goroutines",
+    "section": "select"
+  },
+  {
+    "text": "func main() {    ch1 := make(chan int)    ch2 := make(chan int)    go func() {        inGoroutine := 1        ch1 <- inGoroutine        fromMain := <-ch2        fmt.Println(\"goroutine:\", inGoroutine, fromMain)    }()    inMain := 2    ch2 <- inMain    fromGoroutine := <-ch1    fmt.Println(\"main:\", inMain, fromGoroutine)}",
+    "section": "select"
+  },
+  {
+    "text": "If you run this program on The Go Playground or in the sample_code/deadlockdirectory in the Chapter 12 repository, you\u2019ll see the following error:",
+    "section": "select"
+  },
+  {
+    "text": "fatal error: all goroutines are asleep - deadlock!",
+    "section": "select"
+  },
+  {
+    "text": "Remember that main is running on a goroutine that is launched at startup by the Goruntime. The goroutine that is explicitly launched cannot proceed until ch1 is read,and the main goroutine cannot proceed until ch2 is read.",
+    "section": "select"
+  },
+  {
+    "text": "If the channel read and the channel write in the main goroutine are wrapped in aselect, deadlock is avoided (see Example 12-2).",
+    "section": "select"
+  },
+  {
+    "text": "Example 12-2. Using select to avoid deadlocks",
+    "section": "select"
+  },
+  {
+    "text": "func main() {    ch1 := make(chan int)    ch2 := make(chan int)    go func() {        inGoroutine := 1        ch1 <- inGoroutine        fromMain := <-ch2        fmt.Println(\"goroutine:\", inGoroutine, fromMain)    }()    inMain := 2    var fromGoroutine int    select {    case ch2 <- inMain:    case fromGoroutine = <-ch1:    }",
+    "section": "select"
+  },
+  {
+    "text": "fmt.Println(\"main:\", inMain, fromGoroutine)}",
+    "section": "select"
+  },
+  {
+    "text": "If you run this program on The Go Playground or in the sample_code/select directoryin the Chapter 12 repository, you\u2019ll get the output:",
+    "section": "select"
+  },
+  {
+    "text": "main: 2 1",
+    "section": "select"
+  },
+  {
+    "text": "Because a select checks whether any of its cases can proceed, the deadlock isavoided. The goroutine that is launched explicitly wrote the value 1 into ch1, so theread from ch1 into fromGoroutine in the main goroutine is able to succeed.",
+    "section": "select"
+  },
+  {
+    "text": "Although this program doesn\u2019t deadlock, it still doesn\u2019t do the right thing. Thefmt.Println statement in the launched goroutine never executes, because thatgoroutine is paused, waiting for a value to read from ch2. When the main goroutineexits, the program exits and kills any remaining goroutines, which does technicallyresolve the pause. However, you should make sure that all your goroutines exitproperly so that you don\u2019t leak them. I talk about this in more detail in \u201cAlways CleanUp Your Goroutines\u201d on page 299.",
+    "section": "select"
+  },
+  {
+    "text": "Making this program behave properly requires a few techniquesthat you\u2019ll learn about later in the chapter. You can find a workingsolution on The Go Playground.",
+    "section": "select"
+  },
+  {
+    "text": "Since select is responsible for communicating over a number of channels, it is oftenembedded within a for loop:",
+    "section": "select"
+  },
+  {
+    "text": "for {    select {    case <-done:        return    case v := <-ch:        fmt.Println(v)    }}",
+    "section": "select"
+  },
+  {
+    "text": "This is so common that the combination is often referred to as a for-select loop.When using a for-select loop, you must include a way to exit the loop. You\u2019ll seeone way to do this in \u201cUse the Context to Terminate Goroutines\u201d on page 300.",
+    "section": "select"
+  },
+  {
+    "text": "Just like switch statements, a select statement can have a default clause. Also justlike switch, default is selected when there are no cases with channels that can beread or written. If you want to implement a nonblocking read or write on a channel,use a select with a default. The following code does not wait if there\u2019s no value toread in ch; it immediately executes the body of the default:",
+    "section": "select"
+  },
+  {
+    "text": "select {case v := <-ch:    fmt.Println(\"read from ch:\", v)default:    fmt.Println(\"no value written to ch\")}",
+    "section": "select"
+  },
+  {
+    "text": "You\u2019ll take a look at a use for default in \u201cImplement Backpressure\u201d on page 302.",
+    "section": "select"
+  },
+  {
+    "text": "Having a default case inside a for-select loop is almost alwaysthe wrong thing to do. It will be triggered every time through theloop when there\u2019s nothing to read or write for any of the cases.This makes your for loop run constantly, which uses a great deal ofCPU.",
+    "section": "select"
+  },
+  {
+    "text": "Now that you\u2019ve seen the basic tools that Go provides for concurrency, let\u2019s take alook at some concurrency best practices and patterns.",
+    "section": "Concurrency Practices and Patterns"
+  },
+  {
+    "text": "Concurrency is an implementation detail, and good API design should hide imple\u2010mentation details as much as possible. This allows you to change how your codeworks without changing how your code is invoked.",
+    "section": "Keep Your APIs Concurrency-Free"
+  },
+  {
+    "text": "Practically, this means that you should never expose channels or mutexes in yourAPI\u2019s types, functions, and methods (I\u2019ll talk about mutexes in \u201cWhen to Use MutexesInstead of Channels\u201d on page 313). If you expose a channel, you put the responsibilityof channel management on the users of your API. The users then have to worryabout concerns like whether a channel is buffered or closed or nil. They can alsotrigger deadlocks by accessing channels or mutexes in an unexpected order.",
+    "section": "Keep Your APIs Concurrency-Free"
+  },
+  {
+    "text": "This doesn\u2019t mean that you shouldn\u2019t ever have channels as func\u2010tion parameters or struct fields. It means that they shouldn\u2019t beexported.",
+    "section": "Keep Your APIs Concurrency-Free"
+  },
+  {
+    "text": "This rule has some exceptions. If your API is a library with a concurrency helperfunction, channels are going to be part of its API.",
+    "section": "Keep Your APIs Concurrency-Free"
+  },
+  {
+    "text": "Most of the time, the closure that you use to launch a goroutine has no parameters.Instead, it captures values from the environment where it was declared. Before Go1.22, there was one common situation where this didn\u2019t work: when trying to capturethe index or value of a for loop. As mentioned in \u201cThe for-range value is a copy\u201don page 81 and \u201cUsing go.mod\u201d on page 224, a backward-breaking change wasintroduced in Go 1.22 that changed the behavior of a for loop so that it creates newvariables for the index and value on each iteration instead of reusing a single variable.",
+    "section": "Goroutines, for Loops, and Varying Variables"
+  },
+  {
+    "text": "The following code demonstrates the reason this change was worthwhile. You canfind it in the goroutine_for_loop repository in the Learning Go 2nd Edition organi\u2010zation on GitHub.",
+    "section": "Goroutines, for Loops, and Varying Variables"
+  },
+  {
+    "text": "If you run the following code on Go 1.21 or earlier (or on Go 1.22 or later with theGo version set to 1.21 or earlier in the go directive in the go.mod file), you\u2019ll see asubtle bug:",
+    "section": "Goroutines, for Loops, and Varying Variables"
+  },
+  {
+    "text": "func main() {    a := []int{2, 4, 6, 8, 10}    ch := make(chan int, len(a))    for _, v := range a {        go func() {            ch <- v * 2        }()    }    for i := 0; i < len(a); i++ {        fmt.Println(<-ch)    }}",
+    "section": "Goroutines, for Loops, and Varying Variables"
+  },
+  {
+    "text": "One goroutine is launched for each value in a. It looks like a different value is passedin to each goroutine, but running the code shows something different:",
+    "section": "Goroutines, for Loops, and Varying Variables"
+  },
+  {
+    "text": "2020202020",
+    "section": "Goroutines, for Loops, and Varying Variables"
+  },
+  {
+    "text": "The reason every goroutine wrote 20 to ch on earlier versions of Go is that the closurefor every goroutine captured the same variable. The index and value variables in afor loop were reused on each iteration. The last value assigned to v was 10. When thegoroutines run, that\u2019s the value that they see.",
+    "section": "Goroutines, for Loops, and Varying Variables"
+  },
+  {
+    "text": "Upgrading to Go 1.22 or later and changing the value of the go directive in go.mod to1.22 or later changes the behavior of for loops so they create a new index and valuevariable on each iteration. This gives you the expected result, with a different valuepassed to each goroutine:",
+    "section": "Goroutines, for Loops, and Varying Variables"
+  },
+  {
+    "text": "20841216",
+    "section": "Goroutines, for Loops, and Varying Variables"
+  },
+  {
+    "text": "If you cannot upgrade to Go 1.22, you can resolve this issue in two ways. The first isto make a copy of the value by shadowing the value within the loop:",
+    "section": "Goroutines, for Loops, and Varying Variables"
+  },
+  {
+    "text": "for _, v := range a {    v := v    go func() {        ch <- v * 2    }()}",
+    "section": "Goroutines, for Loops, and Varying Variables"
+  },
+  {
+    "text": "If you want to avoid shadowing and make the data flow more obvious, you can alsopass the value as a parameter to the goroutine:",
+    "section": "Goroutines, for Loops, and Varying Variables"
+  },
+  {
+    "text": "for _, v := range a {    go func(val int) {        ch <- val * 2    }(v)}",
+    "section": "Goroutines, for Loops, and Varying Variables"
+  },
+  {
+    "text": "While Go 1.22 prevents this issue for the index and value variables in for loops, youstill need to be careful with other variables that are captured by closures. Anytime aclosure depends on a variable whose value might change, whether or not it is used asa goroutine, you must pass the value into the closure or make sure a unique copy ofthe variable is created for each closure that refers to the variable.",
+    "section": "Goroutines, for Loops, and Varying Variables"
+  },
+  {
+    "text": "Anytime a closure uses a variable whose value might change, usea parameter to pass a copy of the variable\u2019s current value into theclosure.",
+    "section": "Goroutines, for Loops, and Varying Variables"
+  },
+  {
+    "text": "Whenever you launch a goroutine function, you must make sure that it will eventu\u2010ally exit. Unlike variables, the Go runtime can\u2019t detect that a goroutine will never beused again. If a goroutine doesn\u2019t exit, all the memory allocated for variables on itsstack remains allocated and any memory on the heap that is rooted in the goroutine\u2019sstack variables cannot be garbage collected. This is called a goroutine leak.",
+    "section": "Always Clean Up Your Goroutines"
+  },
+  {
+    "text": "It may not be obvious that a goroutine isn\u2019t guaranteed to exit. For example, say youused a goroutine as a generator:",
+    "section": "Always Clean Up Your Goroutines"
+  },
+  {
+    "text": "func countTo(max int) <-chan int {    ch := make(chan int)    go func() {        for i := 0; i < max; i++ {            ch <- i        }        close(ch)    }()    return ch}",
+    "section": "Always Clean Up Your Goroutines"
+  },
+  {
+    "text": "func main() {    for i := range countTo(10) {        fmt.Println(i)    }}",
+    "section": "Always Clean Up Your Goroutines"
+  },
+  {
+    "text": "This is just a short example; don\u2019t use a goroutine to generate a listof numbers. It\u2019s too simple of an operation, which violates one ofour \u201cwhen to use concurrency\u201d guidelines.",
+    "section": "Always Clean Up Your Goroutines"
+  },
+  {
+    "text": "In the common case, where you use all the values, the goroutine exits. However, ifyou exit the loop early, the goroutine blocks forever, waiting for a value to be readfrom the channel:",
+    "section": "Always Clean Up Your Goroutines"
+  },
+  {
+    "text": "func main() {    for i := range countTo(10) {        if i > 5 {            break        }        fmt.Println(i)    }}",
+    "section": "Always Clean Up Your Goroutines"
+  },
+  {
+    "text": "To solve the countTo goroutine leak, you need a way to tell the goroutine that it\u2019s timeto stop processing. You solve this in Go by using a context. Here\u2019s a rewrite of countToto demonstrate this technique. You can find the code in the sample_code/context_can\u2010cel directory in the Chapter 12 repository:",
+    "section": "Use the Context to Terminate Goroutines"
+  },
+  {
+    "text": "func countTo(ctx context.Context, max int) <-chan int {    ch := make(chan int)    go func() {        defer close(ch)        for i := 0; i < max; i++ {            select {            case <-ctx.Done():",
+    "section": "Use the Context to Terminate Goroutines"
+  },
+  {
+    "text": "return            case ch <- i:            }        }    }()    return ch}",
+    "section": "Use the Context to Terminate Goroutines"
+  },
+  {
+    "text": "func main() {    ctx, cancel := context.WithCancel(context.Background())    defer cancel()    ch := countTo(ctx, 10)    for i := range ch {        if i > 5 {            break        }        fmt.Println(i)    }}",
+    "section": "Use the Context to Terminate Goroutines"
+  },
+  {
+    "text": "The countTo function is modified to take a context.Context parameter in additionto max. The for loop in the goroutine is also changed. It is now a for-select loopwith two cases. One tries to write to ch. The other case checks the channel returnedby the Done method on the context. If it returns a value, you exit the for-select loopand the goroutine. Now, you have a way to prevent the goroutine from leaking whenevery value is read.",
+    "section": "Use the Context to Terminate Goroutines"
+  },
+  {
+    "text": "This leads to the question, how do you get the Done channel to return a value? It istriggered via context cancellation. In main, you create a context and a cancel functionby using the WithCancel function in the context package. Next, you use defer to callcancel when the main function exits. This closes the channel returned by Done, andsince a closed channel always returns a value, it ensures that the goroutine runningcountTo exits.",
+    "section": "Use the Context to Terminate Goroutines"
+  },
+  {
+    "text": "Using the context to terminate a goroutine is a very common pattern. It allows youto stop goroutines based on something from an earlier function in the call stack. In\u201cCancellation\u201d on page 358, you\u2019ll learn in detail how to use the context to tell one ormore goroutines that it is time to shut down.",
+    "section": "Use the Context to Terminate Goroutines"
+  },
+  {
+    "text": "One of the most complicated techniques to master in Go concurrency is decidingwhen to use a buffered channel. By default, channels are unbuffered, and they areeasy to understand: one goroutine writes and waits for another goroutine to pick upits work, like a baton in a relay race. Buffered channels are much more complicated.You have to pick a size, since buffered channels never have unlimited buffers. Properuse of a buffered channel means that you must handle the case where the buffer is",
+    "section": "Know When to Use Buffered and Unbuffered Channels"
+  },
+  {
+    "text": "full and your writing goroutine blocks waiting for a reading goroutine. So what is theproper use of a buffered channel?",
+    "section": "Know When to Use Buffered and Unbuffered Channels"
+  },
+  {
+    "text": "The case for buffered channels is subtle. To sum it up in a single sentence: bufferedchannels are useful when you know how many goroutines you have launched, wantto limit the number of goroutines you will launch, or want to limit the amount ofwork that is queued up.",
+    "section": "Know When to Use Buffered and Unbuffered Channels"
+  },
+  {
+    "text": "Buffered channels work great when you either want to gather data back from a setof goroutines that you have launched or want to limit concurrent usage. They arealso helpful for managing the amount of work a system has queued up, preventingyour services from falling behind and becoming overwhelmed. Here are a couple ofexamples to show how they can be used.",
+    "section": "Know When to Use Buffered and Unbuffered Channels"
+  },
+  {
+    "text": "In the first example, you are processing the first 10 results on a channel. To do this,you launch 10 goroutines, each of which writes its results to a buffered channel:",
+    "section": "Know When to Use Buffered and Unbuffered Channels"
+  },
+  {
+    "text": "func processChannel(ch chan int) []int {    const conc = 10    results := make(chan int, conc)    for i := 0; i < conc; i++ {        go func() {            v := <- ch            results <- process(v)        }()    }    var out []int    for i := 0; i < conc; i++ {        out = append(out, <-results)    }    return out}",
+    "section": "Know When to Use Buffered and Unbuffered Channels"
+  },
+  {
+    "text": "You know exactly how many goroutines have been launched, and you want eachgoroutine to exit as soon as it finishes its work. This means you can create a bufferedchannel with one space for each launched goroutine, and have each goroutine writedata to this goroutine without blocking. You can then loop over the buffered channel,reading out the values as they are written. When all the values have been read, youreturn the results, knowing that you aren\u2019t leaking any goroutines.",
+    "section": "Know When to Use Buffered and Unbuffered Channels"
+  },
+  {
+    "text": "You can find this code in the sample_code/buffered_channel_work directory in theChapter 12 repository.",
+    "section": "Know When to Use Buffered and Unbuffered Channels"
+  },
+  {
+    "text": "Another technique that can be implemented with a buffered channel is backpressure.It is counterintuitive, but systems perform better overall when their components limitthe amount of work they are willing to perform. You can use a buffered channel and aselect statement to limit the number of simultaneous requests in a system:",
+    "section": "Implement Backpressure"
+  },
+  {
+    "text": "type PressureGauge struct {    ch chan struct{}}",
+    "section": "Implement Backpressure"
+  },
+  {
+    "text": "func New(limit int) *PressureGauge {    return &PressureGauge{        ch: make(chan struct{}, limit),    }}",
+    "section": "Implement Backpressure"
+  },
+  {
+    "text": "func (pg *PressureGauge) Process(f func()) error {    select {    case pg.ch <- struct{}{}:        f()        <-pg.ch        return nil    default:        return errors.New(\"no more capacity\")    }}",
+    "section": "Implement Backpressure"
+  },
+  {
+    "text": "In this code, you create a struct containing a buffered channel that can hold a numberof \u201ctokens\u201d and a function to run. Every time a goroutine wants to use the function,it calls Process. This is one of the rare examples of the same goroutine both readingand writing the same channel. The select tries to write a token to the channel. If itcan, the function runs, and then a token is read to the buffered channel. If it can\u2019twrite a token, the default case runs, and an error is returned instead. Here\u2019s a quickexample that uses this code with the built-in HTTP server (you\u2019ll learn more aboutworking with HTTP in \u201cThe Server\u201d on page 337):",
+    "section": "Implement Backpressure"
+  },
+  {
+    "text": "func doThingThatShouldBeLimited() string {    time.Sleep(2 * time.Second)    return \"done\"}",
+    "section": "Implement Backpressure"
+  },
+  {
+    "text": "func main() {    pg := New(10)    http.HandleFunc(\"/request\", func(w http.ResponseWriter, r *http.Request) {        err := pg.Process(func() {            w.Write([]byte(doThingThatShouldBeLimited()))        })        if err != nil {            w.WriteHeader(http.StatusTooManyRequests)            w.Write([]byte(\"Too many requests\"))        }    })    http.ListenAndServe(\":8080\", nil)}",
+    "section": "Implement Backpressure"
+  },
+  {
+    "text": "You can find this code in the sample_code/backpressure directory in the Chapter 12repository.",
+    "section": "Implement Backpressure"
+  },
+  {
+    "text": "When you need to combine data from multiple concurrent sources, the selectkeyword is great. However, you need to properly handle closed channels. If one of thecases in a select is reading a closed channel, it will always be successful, returningthe zero value. Every time that case is selected, you need to check to make sure thatthe value is valid and skip the case. If reads are spaced out, your program is goingto waste a lot of time reading junk values. Even if there is lots of activity on thenonclosed channels, your program will still spend some portion of its time readingfrom the closed channel, since select chooses a case at random.",
+    "section": "Turn Off a case in a select"
+  },
+  {
+    "text": "When that happens, you rely on something that looks like an error: reading a nilchannel. As you saw earlier, reading from or writing to a nil channel causes yourcode to hang forever. While that is bad if it is triggered by a bug, you can use anil channel to disable a case in a select. When you detect that a channel hasbeen closed, set the channel\u2019s variable to nil. The associated case will no longer run,because the read from the nil channel never returns a value. Here is a for-selectloop that reads from two channels until both are closed:",
+    "section": "Turn Off a case in a select"
+  },
+  {
+    "text": "// in and in2 are channelsfor count := 0; count < 2; {    select {    case v, ok := <-in:        if !ok {            in = nil // the case will never succeed again!            count++            continue        }        // process the v that was read from in    case v, ok := <-in2:        if !ok {            in2 = nil // the case will never succeed again!            count++            continue        }        // process the v that was read from in2    }}",
+    "section": "Turn Off a case in a select"
+  },
+  {
+    "text": "You can try out this code on The Go Playground or in the sample_code/close_casedirectory in the Chapter 12 repository.",
+    "section": "Turn Off a case in a select"
+  },
+  {
+    "text": "Most interactive programs have to return a response within a certain amount of time.One of the things that you can do with concurrency in Go is manage how much timea request (or a part of a request) has to run. Other languages introduce additionalfeatures on top of promises or futures to add this functionality, but Go\u2019s timeout",
+    "section": "Time Out Code"
+  },
+  {
+    "text": "idiom shows how you build complicated features from existing parts. Let\u2019s take alook:",
+    "section": "Time Out Code"
+  },
+  {
+    "text": "func timeLimit[T any](worker func() T, limit time.Duration) (T, error) {    out := make(chan T, 1)    ctx, cancel := context.WithTimeout(context.Background(), limit)    defer cancel()    go func() {        out <- worker()    }()    select {    case result := <-out:        return result, nil    case <-ctx.Done():        var zero T        return zero, errors.New(\"work timed out\")    }}",
+    "section": "Time Out Code"
+  },
+  {
+    "text": "Whenever you need to limit how long an operation takes in Go, you\u2019ll see a variationon this pattern. I talk about the context in Chapter 14 and cover using timeouts indetail in \u201cContexts with Deadlines\u201d on page 363. For now, all you need to know is thatreaching the timeout cancels the context. The Done method on the context returnsa channel that returns a value when the context is canceled by either timing out orwhen the context\u2019s cancel method is called. You create a timed context by using theWithTimeout function in the context package and specify how long to wait by usingconstants from the time package (I\u2019ll talk more about the time package in \u201ctime\u201d onpage 324).",
+    "section": "Time Out Code"
+  },
+  {
+    "text": "Once the context is set up, you run the worker in a goroutine and then use selectto choose between two cases. The first case reads the value from the out channelwhen the work completes. The second case waits for the channel returned by theDone method to return a value, just as you saw in \u201cUse the Context to TerminateGoroutines\u201d on page 300. If it does, you return a timeout error. You write to abuffered channel of size 1 so that the channel write in the goroutine will completeeven if Done is triggered first.",
+    "section": "Time Out Code"
+  },
+  {
+    "text": "You can try out this code on The Go Playground or in the sample_code/time_outdirectory in the Chapter 12 repository.",
+    "section": "Time Out Code"
+  },
+  {
+    "text": "If timeLimit exits before the goroutine finishes processing, thegoroutine continues to run, eventually writing the returned valueto the buffered channel and exiting. You just don\u2019t do anything withthe result that is returned. If you want to stop work in a goroutinewhen you are no longer waiting for it to complete, use contextcancellation, which I\u2019ll discuss in \u201cCancellation\u201d on page 358.",
+    "section": "Time Out Code"
+  },
+  {
+    "text": "Sometimes one goroutine needs to wait for multiple goroutines to complete theirwork. If you are waiting for a single goroutine, you can use the context cancellationpattern that you saw earlier. But if you are waiting on several goroutines, you needto use a WaitGroup, which is found in the sync package in the standard library. Hereis a simple example, which you can run on The Go Playground or in the sample_code/waitgroup directory in the Chapter 12 repository:",
+    "section": "Use WaitGroups"
+  },
+  {
+    "text": "func main() {    var wg sync.WaitGroup    wg.Add(3)    go func() {        defer wg.Done()        doThing1()    }()    go func() {        defer wg.Done()        doThing2()    }()    go func() {        defer wg.Done()        doThing3()    }()    wg.Wait()}",
+    "section": "Use WaitGroups"
+  },
+  {
+    "text": "A sync.WaitGroup doesn\u2019t need to be initialized, just declared, as its zero valueis useful. There are three methods on sync.WaitGroup: Add, which increments thecounter of goroutines to wait for; Done, which decrements the counter and is calledby a goroutine when it is finished; and Wait, which pauses its goroutine until thecounter hits zero. Add is usually called once, with the number of goroutines that willbe launched. Done is called within the goroutine. To ensure that it is called, even if thegoroutine panics, you use a defer.",
+    "section": "Use WaitGroups"
+  },
+  {
+    "text": "You\u2019ll notice that you don\u2019t explicitly pass the sync.WaitGroup. There are two rea\u2010sons. The first is that you must ensure that every place that uses a sync.WaitGroupis using the same instance. If you pass the sync.WaitGroup to the goroutine func\u2010tion and don\u2019t use a pointer, then the function has a copy and the call to Donewon\u2019t decrement the original sync.WaitGroup. By using a closure to capture thesync.WaitGroup, you are assured that every goroutine is referring to the sameinstance.",
+    "section": "Use WaitGroups"
+  },
+  {
+    "text": "The second reason is design. Remember, you should keep concurrency out of yourAPI. As you saw with channels earlier, the usual pattern is to launch a goroutinewith a closure that wraps the business logic. The closure manages issues aroundconcurrency, and the function provides the algorithm.",
+    "section": "Use WaitGroups"
+  },
+  {
+    "text": "Let\u2019s take a look at a more realistic example. As I mentioned earlier, when youhave multiple goroutines writing to the same channel, you need to make sure thatthe channel being written to is closed only once. A sync.WaitGroup is perfect forthis. Let\u2019s see how it works in a function that processes the values in a channelconcurrently, gathers the results into a slice, and returns the slice:",
+    "section": "Use WaitGroups"
+  },
+  {
+    "text": "func processAndGather[T, R any](in <-chan T, processor func(T) R, num int) []R {    out := make(chan R, num)    var wg sync.WaitGroup    wg.Add(num)    for i := 0; i < num; i++ {        go func() {            defer wg.Done()            for v := range in {                out <- processor(v)            }        }()    }    go func() {        wg.Wait()        close(out)    }()    var result []R    for v := range out {        result = append(result, v)    }    return result}",
+    "section": "Use WaitGroups"
+  },
+  {
+    "text": "In this example, you launch a monitoring goroutine that waits until all the processinggoroutines exit. When they do, the monitoring goroutine calls close on the outputchannel. The for-range channel loop exits when out is closed and the buffer isempty. Finally, the function returns the processed values. You can try out this code inthe sample_code/waitgroup_close_once directory in the Chapter 12 repository.",
+    "section": "Use WaitGroups"
+  },
+  {
+    "text": "While WaitGroups are handy, they shouldn\u2019t be your first choice when coordinatinggoroutines. Use them only when you have something to clean up (like closing achannel they all write to) after all your worker goroutines exit.",
+    "section": "Use WaitGroups"
+  },
+  {
+    "text": "The Go authors maintain a set of utilities that supplements the standard library.Collectively known as the golang.org/x packages, they include a package callederrgroup that contains a type, errgroup.Group. It builds on top of WaitGroup tocreate a set of goroutines that stop processing when one of them returns an error.Read the errgroup.Group documentation to learn more.",
+    "section": "golang.org/x and errgroup.Group"
+  },
+  {
+    "text": "As I covered in \u201cAvoiding the init Function if Possible\u201d on page 239, init shouldbe reserved for initialization of effectively immutable package-level state. However,sometimes you want to lazy load, or call some initialization code exactly once afterprogram launch time. This is usually because the initialization is relatively slow andmay not even be needed every time your program runs. The sync package includes ahandy type called Once that enables this functionality. Let\u2019s take a quick look at how itworks. Say you have some code that takes a long time to initialize:",
+    "section": "Run Code Exactly Once"
+  },
+  {
+    "text": "type SlowComplicatedParser interface {    Parse(string) string}",
+    "section": "Run Code Exactly Once"
+  },
+  {
+    "text": "func initParser() SlowComplicatedParser {    // do all sorts of setup and loading here}",
+    "section": "Run Code Exactly Once"
+  },
+  {
+    "text": "Here\u2019s how you use sync.Once to delay initialization of a SlowComplicatedParser:",
+    "section": "Run Code Exactly Once"
+  },
+  {
+    "text": "var parser SlowComplicatedParservar once sync.Once",
+    "section": "Run Code Exactly Once"
+  },
+  {
+    "text": "func Parse(dataToParse string) string {    once.Do(func() {        parser = initParser()    })    return parser.Parse(dataToParse)}",
+    "section": "Run Code Exactly Once"
+  },
+  {
+    "text": "There are two package-level variables: parser, which is of type SlowComplicatedParser, and once, which is of type sync.Once. As with sync.WaitGroup, you do nothave to configure an instance of sync.Once. This is an example of making the zerovalue useful, which is a common pattern in Go.",
+    "section": "Run Code Exactly Once"
+  },
+  {
+    "text": "As with sync.WaitGroup, you must make sure not to make a copy of an instanceof sync.Once, because each copy has its own state to indicate whether it has alreadybeen used. Declaring a sync.Once instance inside a function is usually the wrongthing to do, as a new instance will be created on every function call and there will beno memory of previous invocations.",
+    "section": "Run Code Exactly Once"
+  },
+  {
+    "text": "In the example, you want to make sure that parser is initialized only once, so you setthe value of parser from within a closure that\u2019s passed to the Do method on once. IfParse is called more than once, once.Do will not execute the closure again.",
+    "section": "Run Code Exactly Once"
+  },
+  {
+    "text": "You can try out this code on The Go Playground or in the sample_code/sync_oncedirectory in the Chapter 12 repository.",
+    "section": "Run Code Exactly Once"
+  },
+  {
+    "text": "Go 1.21 added helper functions that make it easier to run a function exactlyonce: sync.OnceFunc, sync.OnceValue, and sync.OnceValues. The only differencebetween the three functions is the number of return values of the passed-in function(zero, one, or two, respectively). The sync.OnceValue and sync.OnceValues func\u2010tions are generic, so they adapt to the type of the original function\u2019s return values.",
+    "section": "Run Code Exactly Once"
+  },
+  {
+    "text": "Using these functions is straightforward. You pass the original function to the helperfunction and get back a function that calls the original function only once. The valuesreturned by the original function are cached. Here\u2019s how you can use sync.OnceValueto rewrite the Parse function in the previous example:",
+    "section": "Run Code Exactly Once"
+  },
+  {
+    "text": "var initParserCached func() SlowComplicatedParser = sync.OnceValue(initParser)",
+    "section": "Run Code Exactly Once"
+  },
+  {
+    "text": "func Parse(dataToParse string) string {    parser := initParserCached()    return parser.Parse(dataToParse)}",
+    "section": "Run Code Exactly Once"
+  },
+  {
+    "text": "The package-level initParserCached variable is assigned the function returned bysync.OnceValue when initParser is passed to it. The first time initParserCached iscalled, initParser is also called, and its return value is cached. Each subsequent timeinitParserCached is called, the cached value is returned. This means you can get ridof the parser package-level variable.",
+    "section": "Run Code Exactly Once"
+  },
+  {
+    "text": "You can try out this code on The Go Playground or in the sample_code/sync_valuedirectory in the Chapter 12 repository.",
+    "section": "Run Code Exactly Once"
+  },
+  {
+    "text": "Let\u2019s go back to the example from the first section in the chapter. You have a functionthat calls three web services. You send data to two of those services, and then take theresults of those two calls and send them to the third, returning the result. The entireprocess must take less than 50 milliseconds, or an error is returned.",
+    "section": "Put Your Concurrent Tools Together"
+  },
+  {
+    "text": "You\u2019ll start with the function you invoke:",
+    "section": "Put Your Concurrent Tools Together"
+  },
+  {
+    "text": "func GatherAndProcess(ctx context.Context, data Input) (COut, error) {    ctx, cancel := context.WithTimeout(ctx, 50*time.Millisecond)    defer cancel()",
+    "section": "Put Your Concurrent Tools Together"
+  },
+  {
+    "text": "ab := newABProcessor()    ab.start(ctx, data)    inputC, err := ab.wait(ctx)    if err != nil {        return COut{}, err    }",
+    "section": "Put Your Concurrent Tools Together"
+  },
+  {
+    "text": "c := newCProcessor()    c.start(ctx, inputC)",
+    "section": "Put Your Concurrent Tools Together"
+  },
+  {
+    "text": "out, err := c.wait(ctx)    return out, err}",
+    "section": "Put Your Concurrent Tools Together"
+  },
+  {
+    "text": "The first thing to do is set up a context.Context that times out in 50 milliseconds, asyou saw in \u201cTime Out Code\u201d on page 304.",
+    "section": "Put Your Concurrent Tools Together"
+  },
+  {
+    "text": "After creating the context, use a defer to make sure the context\u2019s cancel function iscalled. As I\u2019ll discuss in \u201cCancellation\u201d on page 358, you must call this function, orresources leak.",
+    "section": "Put Your Concurrent Tools Together"
+  },
+  {
+    "text": "You are using A and B as the names of the two services that are called in parallel, soyou\u2019ll make a new abProcessor to call them. You then start processing with a call tothe start method, and then wait for your results with a call to the wait method.",
+    "section": "Put Your Concurrent Tools Together"
+  },
+  {
+    "text": "When wait returns, you do a standard error check. If all is well, you call the thirdservice, which you are calling C. The logic is the same as before. Processing is startedwith a call to the start method on the cProcessor and then you wait for the resultwith a call to the wait method on cProcessor. You then return the result of the waitmethod call.",
+    "section": "Put Your Concurrent Tools Together"
+  },
+  {
+    "text": "This looks a lot like standard sequential code without concurrency. Let\u2019s look at theabProcessor and cProcessor to see how the concurrency happens:",
+    "section": "Put Your Concurrent Tools Together"
+  },
+  {
+    "text": "type abProcessor struct {    outA chan aOut    outB chan bOut    errs chan error}",
+    "section": "Put Your Concurrent Tools Together"
+  },
+  {
+    "text": "func newABProcessor() *abProcessor {    return &abProcessor{        outA: make(chan aOut, 1),        outB: make(chan bOut, 1),        errs: make(chan error, 2),    }}",
+    "section": "Put Your Concurrent Tools Together"
+  },
+  {
+    "text": "The abProcessor has three fields, all of which are channels. They are outA, outB,and errs. You\u2019ll see how you use all these channels next. Notice that every channelis buffered, so that the goroutines that write to them can exit after writing withoutwaiting for a read to happen. The errs channel has a buffer size of 2, because it couldhave up to two errors written to it.",
+    "section": "Put Your Concurrent Tools Together"
+  },
+  {
+    "text": "Next is the implementation of the start method:",
+    "section": "Put Your Concurrent Tools Together"
+  },
+  {
+    "text": "func (p *abProcessor) start(ctx context.Context, data Input) {    go func() {        aOut, err := getResultA(ctx, data.A)        if err != nil {",
+    "section": "Put Your Concurrent Tools Together"
+  },
+  {
+    "text": "p.errs <- err            return        }        p.outA <- aOut    }()    go func() {        bOut, err := getResultB(ctx, data.B)        if err != nil {            p.errs <- err            return        }        p.outB <- bOut    }()}",
+    "section": "Put Your Concurrent Tools Together"
+  },
+  {
+    "text": "The start method launches two goroutines. The first one calls getResultA to talk tothe A service. If the call returns an error, you write to the errs channel. Otherwise,you write to the outA channel. Since these channels are buffered, the goroutine willnot hang, no matter which channel is written to. Also notice that you are passingthe context along to getResultA, which allows it to cancel processing if the timeouthappens.",
+    "section": "Put Your Concurrent Tools Together"
+  },
+  {
+    "text": "The second goroutine is just like the first, only it calls getResultB and writes to theoutB channel on success.",
+    "section": "Put Your Concurrent Tools Together"
+  },
+  {
+    "text": "Let\u2019s see what the wait method for ABProcessor looks like:",
+    "section": "Put Your Concurrent Tools Together"
+  },
+  {
+    "text": "func (p *abProcessor) wait(ctx context.Context) (cIn, error) {    var cData cIn    for count := 0; count < 2; count++ {        select {        case a := <-p.outA:            cData.a = a        case b := <-p.outB:            cData.b = b        case err := <-p.errs:            return cIn{}, err        case <-ctx.Done():            return cIn{}, ctx.Err()        }    }    return cData, nil}",
+    "section": "Put Your Concurrent Tools Together"
+  },
+  {
+    "text": "The wait method on abProcessor is the most complicated method you need toimplement. It populates a struct of type cIn, which holds the data returned fromcalling the A service and the B service. You define your output variable, cData, as typecIn. You then have a for loop that counts to two, since you need to read from twochannels to finish successfully. Inside the loop, you have a select statement. If youread a value on outA, you set the a field on cData. If you read a value on outB, you set",
+    "section": "Put Your Concurrent Tools Together"
+  },
+  {
+    "text": "the b field on cData. If you read a value on the errs channel, you return immediatelywith the error. Finally, if the context times out, you return immediately with the errorfrom the context\u2019s Err method.",
+    "section": "Put Your Concurrent Tools Together"
+  },
+  {
+    "text": "Once you have read a value from both the p.outA channel and the p.outB channel,you exit the loop and return the input that you\u2019re going to use with the cProcessor.",
+    "section": "Put Your Concurrent Tools Together"
+  },
+  {
+    "text": "The cProcessor looks like a simpler version of the abProcessor:",
+    "section": "Put Your Concurrent Tools Together"
+  },
+  {
+    "text": "type cProcessor struct {    outC chan COut    errs chan error}",
+    "section": "Put Your Concurrent Tools Together"
+  },
+  {
+    "text": "func newCProcessor() *cProcessor {    return &cProcessor{        outC: make(chan COut, 1),        errs: make(chan error, 1),    }}",
+    "section": "Put Your Concurrent Tools Together"
+  },
+  {
+    "text": "func (p *cProcessor) start(ctx context.Context, inputC cIn) {    go func() {        cOut, err := getResultC(ctx, inputC)        if err != nil {            p.errs <- err            return        }        p.outC <- cOut    }()}",
+    "section": "Put Your Concurrent Tools Together"
+  },
+  {
+    "text": "func (p *cProcessor) wait(ctx context.Context) (COut, error) {    select {    case out := <-p.outC:        return out, nil    case err := <-p.errs:        return COut{}, err    case <-ctx.Done():        return COut{}, ctx.Err()    }}",
+    "section": "Put Your Concurrent Tools Together"
+  },
+  {
+    "text": "The cProcessor struct has one out channel and one error channel.",
+    "section": "Put Your Concurrent Tools Together"
+  },
+  {
+    "text": "The start method on the cProcessor looks like the start method on the abProcessor. It launches a goroutine that calls getResultC with your input data, writes to theerrs channel on an error, and writes to the outC channel on success.",
+    "section": "Put Your Concurrent Tools Together"
+  },
+  {
+    "text": "Finally, the wait method on the cProcessor is a simple select statement that checkswhether there\u2019s a value to read from the outC channel, the errs channel, or thecontext\u2019s Done channel.",
+    "section": "Put Your Concurrent Tools Together"
+  },
+  {
+    "text": "By structuring code with goroutines, channels, and select statements, you separatethe individual steps, allow independent parts to run and complete in any order, andcleanly exchange data between the dependent parts. In addition, you make sure thatno part of the program hangs, and you properly handle timeouts set both withinthis function and from earlier functions in the call history. If you are not convincedthat this is a better method for implementing concurrency, try to implement this inanother language. You might be surprised at how difficult it is.",
+    "section": "Put Your Concurrent Tools Together"
+  },
+  {
+    "text": "You can find the code for this concurrent pipeline in the sample_code/pipeline direc\u2010tory in the Chapter 12 repository.",
+    "section": "Put Your Concurrent Tools Together"
+  },
+  {
+    "text": "If you\u2019ve had to coordinate access to data across threads in other programminglanguages, you have probably used a mutex. This is short for mutual exclusion, andthe job of a mutex is to limit the concurrent execution of some code or access to ashared piece of data. This protected part is called the critical section.",
+    "section": "When to Use Mutexes Instead of Channels"
+  },
+  {
+    "text": "There are good reasons Go\u2019s creators designed channels and select to manageconcurrency. The main problem with mutexes is that they obscure the flow of datathrough a program. When a value is passed from goroutine to goroutine over a seriesof channels, the data flow is clear. Access to the value is localized to a single goroutineat a time. When a mutex is used to protect a value, there is nothing to indicatewhich goroutine currently has ownership of the value, because access to the value isshared by all the concurrent processes. That makes it hard to understand the orderof processing. There is a saying in the Go community to describe this philosophy:\u201cShare memory by communicating; do not communicate by sharing memory.\u201d",
+    "section": "When to Use Mutexes Instead of Channels"
+  },
+  {
+    "text": "That said, sometimes it is clearer to use a mutex, and the Go standard library includesmutex implementations for these situations. The most common case is when yourgoroutines read or write a shared value, but don\u2019t process the value. Let\u2019s use anin-memory scoreboard for a multiplayer game as an example. You\u2019ll first see how toimplement this using channels. Here\u2019s a function that you can launch as a goroutineto manage the scoreboard:",
+    "section": "When to Use Mutexes Instead of Channels"
+  },
+  {
+    "text": "func scoreboardManager(ctx context.Context, in <-chan func(map[string]int)) {    scoreboard := map[string]int{}    for {        select {        case <-ctx.Done():            return        case f := <-in:",
+    "section": "When to Use Mutexes Instead of Channels"
+  },
+  {
+    "text": "f(scoreboard)        }    }}",
+    "section": "When to Use Mutexes Instead of Channels"
+  },
+  {
+    "text": "This function declares a map and then listens on one channel for a function thatreads or modifies the map and on a context\u2019s Done channel to know when to shutdown. Let\u2019s create a type with a method to write a value to the map:",
+    "section": "When to Use Mutexes Instead of Channels"
+  },
+  {
+    "text": "type ChannelScoreboardManager chan func(map[string]int)",
+    "section": "When to Use Mutexes Instead of Channels"
+  },
+  {
+    "text": "func NewChannelScoreboardManager(ctx context.Context) ChannelScoreboardManager {    ch := make(ChannelScoreboardManager)    go scoreboardManager(ctx, ch)    return ch}",
+    "section": "When to Use Mutexes Instead of Channels"
+  },
+  {
+    "text": "func (csm ChannelScoreboardManager) Update(name string, val int) {    csm <- func(m map[string]int) {        m[name] = val    }}",
+    "section": "When to Use Mutexes Instead of Channels"
+  },
+  {
+    "text": "The update method is very straightforward: just pass a function that puts a value intothe map. But how about reading from the scoreboard? You need to return a valueback. That means creating a channel that\u2019s written to within the passed-in function:",
+    "section": "When to Use Mutexes Instead of Channels"
+  },
+  {
+    "text": "func (csm ChannelScoreboardManager) Read(name string) (int, bool) {    type Result struct {        out int        ok  bool    }    resultCh := make(chan Result)    csm <- func(m map[string]int) {        out, ok := m[name]        resultCh <- Result{out, ok}    }    result := <-resultCh    return result.out, result.ok}",
+    "section": "When to Use Mutexes Instead of Channels"
+  },
+  {
+    "text": "While this code works, it\u2019s cumbersome and allows only a single reader at a time.A better approach is to use a mutex. The standard library has two mutex implementa\u2010tions, both in the sync package. The first, Mutex, has two methods, Lock and Unlock.Calling Lock causes the current goroutine to pause as long as another goroutine iscurrently in the critical section. When the critical section is clear, the lock is acquiredby the current goroutine, and the code in the critical section is executed. A call to theUnlock method on the Mutex marks the end of the critical section.",
+    "section": "When to Use Mutexes Instead of Channels"
+  },
+  {
+    "text": "The second mutex implementation, called RWMutex, allows you to have both readerlocks and writer locks. While only one writer can be in the critical section at a time,",
+    "section": "When to Use Mutexes Instead of Channels"
+  },
+  {
+    "text": "reader locks are shared; multiple readers can be in the critical section at once. Thewriter lock is managed with the Lock and Unlock methods, while the reader lock ismanaged with RLock and RUnlock methods.",
+    "section": "When to Use Mutexes Instead of Channels"
+  },
+  {
+    "text": "Anytime you acquire a mutex lock, you must make sure that you release the lock. Usea defer statement to call Unlock immediately after calling Lock or RLock:",
+    "section": "When to Use Mutexes Instead of Channels"
+  },
+  {
+    "text": "type MutexScoreboardManager struct {    l          sync.RWMutex    scoreboard map[string]int}",
+    "section": "When to Use Mutexes Instead of Channels"
+  },
+  {
+    "text": "func NewMutexScoreboardManager() *MutexScoreboardManager {    return &MutexScoreboardManager{        scoreboard: map[string]int{},    }}",
+    "section": "When to Use Mutexes Instead of Channels"
+  },
+  {
+    "text": "func (msm *MutexScoreboardManager) Update(name string, val int) {    msm.l.Lock()    defer msm.l.Unlock()    msm.scoreboard[name] = val}",
+    "section": "When to Use Mutexes Instead of Channels"
+  },
+  {
+    "text": "func (msm *MutexScoreboardManager) Read(name string) (int, bool) {    msm.l.RLock()    defer msm.l.RUnlock()    val, ok := msm.scoreboard[name]    return val, ok}",
+    "section": "When to Use Mutexes Instead of Channels"
+  },
+  {
+    "text": "You can find the example in the sample_code/mutex directory in the Chapter 12repository.",
+    "section": "When to Use Mutexes Instead of Channels"
+  },
+  {
+    "text": "Now that you\u2019ve seen an implementation using mutexes, carefully consider youroptions before using one. Katherine Cox-Buday\u2019s excellent book Concurrency in Go(O\u2019Reilly) includes a decision tree to help you decide whether to use channels ormutexes:",
+    "section": "When to Use Mutexes Instead of Channels"
+  },
+  {
+    "text": "\u2022 If you are coordinating goroutines or tracking a value as it is transformed by a\u2022series of goroutines, use channels.\n\u2022 If you are sharing access to a field in a struct, use mutexes.\u2022\n\u2022 If you discover a critical performance issue when using channels (see \u201cUsing\u2022Benchmarks\u201d on page 393 to learn how to do this), and you cannot find anyother way to fix the issue, modify your code to use a mutex.",
+    "section": "When to Use Mutexes Instead of Channels"
+  },
+  {
+    "text": "Since your scoreboard is a field in a struct and there\u2019s no transfer of the scoreboard,using a mutex makes sense. This is a good use for a mutex only because the data is",
+    "section": "When to Use Mutexes Instead of Channels"
+  }
+]
